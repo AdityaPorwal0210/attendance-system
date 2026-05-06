@@ -1,0 +1,31 @@
+# Core Computer Vision
+opencv-python==4.8.1.78
+opencv-contrib-python==4.8.1.78
+
+# Face Recognition & Detection
+insightface==0.7.3
+onnxruntime==1.16.3
+onnx==1.15.0
+
+# Object Detection (YOLO)
+ultralytics==8.0.228
+
+# Scientific Computing
+numpy==1.24.3
+scipy==1.11.4
+
+# Image Processing
+Pillow==10.1.0
+
+# Progress Bars & Utilities
+tqdm==4.66.1
+
+# Data Handling
+pandas==2.1.4
+
+# Video Processing (Optional, for RTSP)
+imageio==2.33.1
+imageio-ffmpeg==0.4.9
+
+# Testing
+pytest==7.4.3

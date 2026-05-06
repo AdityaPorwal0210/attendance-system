@@ -1,0 +1,29 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+data/enrollment_photos/*
+data/enrolled_students/*
+data/test_videos/*
+data/frame_extracts/*
+output/
+models/
+*.pt
+
+# Node
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Environment
+.env
+backend/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
