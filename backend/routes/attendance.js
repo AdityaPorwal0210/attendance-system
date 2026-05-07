@@ -4,10 +4,9 @@ const path    = require('path');
 const fs      = require('fs').promises;
 const { spawn } = require('child_process');
 
-// Fix model path
 const { AttendanceSession, AttendanceRecord } = require(path.join(__dirname, '..', 'models', 'index.js'));
 
-// Process video for attendance
+// ── POST /api/attendance/process ──────────────────────────────────────────────
 router.post('/process', async (req, res) => {
   try {
     const { video_path, class_name, date, instructor, samples = 5, threshold = 0.6 } = req.body;
@@ -29,10 +28,8 @@ router.post('/process', async (req, res) => {
 
     await session.save();
 
-    // Respond immediately, process in background
     res.json({ success: true, message: 'Processing started', session_id, status: 'processing' });
 
-    // Run Python pipeline in background
     processVideoAsync(session_id, video_path, samples, threshold);
 
   } catch (error) {
@@ -40,13 +37,12 @@ router.post('/process', async (req, res) => {
   }
 });
 
-// Background processing function
+// ── Background video processing ───────────────────────────────────────────────
 async function processVideoAsync(session_id, video_path, samples, threshold) {
   const startTime = Date.now();
-
   try {
-    const pythonPath = process.env.PYTHON_PATH || 'python3';
-    const scriptPath = path.join(__dirname, '..', '..', 'python_scripts', 'attendance_pipeline.py');
+    const pythonPath  = process.env.PYTHON_PATH || 'python3';
+    const scriptPath  = path.join(__dirname, '..', '..', 'python_scripts', 'attendance_pipeline.py');
     const enrolledDir = path.join(__dirname, '..', '..', 'data', 'enrolled_students');
     const outputDir   = path.join(__dirname, '..', '..', 'output', 'attendance', session_id);
 
@@ -93,18 +89,20 @@ async function processVideoAsync(session_id, video_path, samples, threshold) {
           }
         );
 
-        // Save individual attendance records
         for (const student of report.attendance) {
-          const record = new AttendanceRecord({
-            student_id:     student.student_id,
-            session_id,
-            date:           new Date(report.metadata.timestamp),
-            status:         'present',
-            marked_by:      'system',
-            appearances:    student.appearances,
-            avg_similarity: student.avg_similarity
-          });
-          await record.save();
+          await AttendanceRecord.findOneAndUpdate(
+            { student_id: student.student_id, session_id },
+            {
+              student_id:     student.student_id,
+              session_id,
+              date:           new Date(report.metadata.timestamp),
+              status:         'present',
+              marked_by:      'system',
+              appearances:    student.appearances,
+              avg_similarity: student.avg_similarity
+            },
+            { upsert: true, new: true }
+          );
         }
 
         console.log(`[INFO] Session ${session_id} completed in ${processingTime}s`);
@@ -121,7 +119,7 @@ async function processVideoAsync(session_id, video_path, samples, threshold) {
   }
 }
 
-// Get all sessions
+// ── GET /api/attendance/sessions ──────────────────────────────────────────────
 router.get('/sessions', async (req, res) => {
   try {
     const { class_name, status } = req.query;
@@ -136,7 +134,7 @@ router.get('/sessions', async (req, res) => {
   }
 });
 
-// Get single session
+// ── GET /api/attendance/sessions/:session_id ──────────────────────────────────
 router.get('/sessions/:session_id', async (req, res) => {
   try {
     const session = await AttendanceSession.findOne({ session_id: req.params.session_id });
@@ -147,11 +145,13 @@ router.get('/sessions/:session_id', async (req, res) => {
   }
 });
 
-// Get student attendance history
+// ── GET /api/attendance/student/:student_id ───────────────────────────────────
 router.get('/student/:student_id', async (req, res) => {
   try {
-    const records = await AttendanceRecord.find({ student_id: req.params.student_id })
-      .sort({ date: -1 }).limit(30);
+    const records = await AttendanceRecord
+      .find({ student_id: req.params.student_id })
+      .sort({ date: -1 })
+      .limit(30);
 
     const total   = records.length;
     const present = records.filter(r => r.status === 'present').length;
@@ -173,30 +173,99 @@ router.get('/student/:student_id', async (req, res) => {
   }
 });
 
-// Manual attendance correction
+// ── POST /api/attendance/sessions/:session_id/correct ─────────────────────────
+// This is the KEY fix: updates BOTH AttendanceRecord AND AttendanceSession.students_present
 router.post('/sessions/:session_id/correct', async (req, res) => {
   try {
-    const { student_id, status, notes } = req.body;
+    const { student_id, status, notes, name } = req.body;
+    const { session_id } = req.params;
 
-    const record = await AttendanceRecord.findOneAndUpdate(
-      { student_id, session_id: req.params.session_id },
-      { status, marked_by: 'manual', notes },
+    if (!student_id || !status) {
+      return res.status(400).json({ success: false, error: 'student_id and status are required' });
+    }
+
+    // 1. Update or create AttendanceRecord
+    await AttendanceRecord.findOneAndUpdate(
+      { student_id, session_id },
+      {
+        student_id,
+        session_id,
+        date:      new Date(),
+        status,
+        marked_by: 'manual',
+        notes:     notes || 'Manually updated by teacher'
+      },
       { upsert: true, new: true }
     );
 
-    res.json({ success: true, message: 'Attendance corrected', data: record });
+    // 2. If marking PRESENT → add to session's students_present array (if not already there)
+    if (status === 'present') {
+      const session = await AttendanceSession.findOne({ session_id });
+
+      if (session) {
+        const alreadyPresent = session.students_present.some(s => s.student_id === student_id);
+
+        if (!alreadyPresent) {
+          // Add student to students_present array
+          await AttendanceSession.findOneAndUpdate(
+            { session_id },
+            {
+              $push: {
+                students_present: {
+                  student_id,
+                  name:           name || student_id,
+                  appearances:    0,
+                  avg_similarity: 0,
+                  status:         'present',
+                  marked_by:      'manual'
+                }
+              }
+            }
+          );
+        } else {
+          // Student already in array — just update marked_by
+          await AttendanceSession.findOneAndUpdate(
+            { session_id, 'students_present.student_id': student_id },
+            {
+              $set: {
+                'students_present.$.marked_by': 'manual',
+                'students_present.$.status':    'present'
+              }
+            }
+          );
+        }
+      }
+    }
+
+    // 3. If marking ABSENT → remove from session's students_present array
+    if (status === 'absent') {
+      await AttendanceSession.findOneAndUpdate(
+        { session_id },
+        {
+          $pull: {
+            students_present: { student_id }
+          }
+        }
+      );
+    }
+
+    res.json({ success: true, message: `Student marked ${status} successfully` });
+
   } catch (error) {
+    console.error('[ERROR] correct attendance:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Resolve unknown face
+// ── POST /api/attendance/sessions/:session_id/resolve-face ────────────────────
 router.post('/sessions/:session_id/resolve-face', async (req, res) => {
   try {
     const { face_id, student_id, student_name } = req.body;
+    const { session_id } = req.params;
 
+    // Mark face as resolved in session
     await AttendanceSession.findOneAndUpdate(
-      { session_id: req.params.session_id, 'unresolved_faces.face_id': face_id },
+      { session_id, 'unresolved_faces.face_id': face_id },
       {
         $set: {
           'unresolved_faces.$.resolved':    true,
@@ -206,15 +275,41 @@ router.post('/sessions/:session_id/resolve-face', async (req, res) => {
       }
     );
 
-    // Also add to present students
+    // Add student to present list
+    await AttendanceSession.findOneAndUpdate(
+      { session_id },
+      {
+        $push: {
+          students_present: {
+            student_id,
+            name:           student_name,
+            appearances:    1,
+            avg_similarity: 0,
+            status:         'present',
+            marked_by:      'manual'
+          }
+        }
+      }
+    );
+
+    // Save attendance record
     await AttendanceRecord.findOneAndUpdate(
-      { student_id, session_id: req.params.session_id },
-      { status: 'present', marked_by: 'manual', notes: 'Resolved from unknown face' },
+      { student_id, session_id },
+      {
+        student_id,
+        session_id,
+        date:      new Date(),
+        status:    'present',
+        marked_by: 'manual',
+        notes:     'Resolved from unknown face'
+      },
       { upsert: true, new: true }
     );
 
-    res.json({ success: true, message: 'Face resolved successfully' });
+    res.json({ success: true, message: 'Face resolved and student marked present' });
+
   } catch (error) {
+    console.error('[ERROR] resolve-face:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });

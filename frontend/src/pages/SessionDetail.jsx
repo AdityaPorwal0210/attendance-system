@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { attendanceAPI, studentsAPI } from '../services/api';
 import { toast } from 'react-toastify';
 
-const STATUS = {
+const STATUS_BADGE = {
   completed:  'badge-green',
   processing: 'badge-yellow',
   failed:     'badge-red'
@@ -11,14 +11,14 @@ const STATUS = {
 
 export default function SessionDetail() {
   const { id } = useParams();
-  const [session,  setSession]  = useState(null);
+  const [session,     setSession]     = useState(null);
   const [allStudents, setAllStudents] = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [search,   setSearch]   = useState('');
-  const [marking,  setMarking]  = useState(null);
+  const [loading,     setLoading]     = useState(true);
+  const [search,      setSearch]      = useState('');
+  const [marking,     setMarking]     = useState(null);
   const pollRef = useRef(null);
 
-  // ── Fetch session + all enrolled students ──────────────────────────────────
+  // ── Fetch data ────────────────────────────────────────────────────────────
   const fetchAll = async () => {
     try {
       const [sRes, stuRes] = await Promise.all([
@@ -34,7 +34,10 @@ export default function SessionDetail() {
     }
   };
 
-  useEffect(() => { fetchAll(); return () => clearInterval(pollRef.current); }, [id]);
+  useEffect(() => {
+    fetchAll();
+    return () => clearInterval(pollRef.current);
+  }, [id]);
 
   // Poll while processing
   useEffect(() => {
@@ -45,46 +48,48 @@ export default function SessionDetail() {
     return () => clearInterval(pollRef.current);
   }, [session?.status]);
 
-  // ── Mark a student present manually ───────────────────────────────────────
+  // ── Mark Present ──────────────────────────────────────────────────────────
   const markPresent = async (student) => {
     setMarking(student.student_id);
     try {
       await attendanceAPI.correctAttendance(id, {
         student_id: student.student_id,
+        name:       student.name,        // ← pass name so backend can add it
         status:     'present',
         notes:      'Manually marked present by teacher'
       });
-      toast.success(`${student.name} marked present`);
-      fetchAll();
-    } catch {
-      toast.error('Failed to update attendance');
+      toast.success(`${student.name} marked present ✓`);
+      await fetchAll();                  // ← refresh so UI updates immediately
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to update attendance');
     } finally {
       setMarking(null);
     }
   };
 
-  // ── Mark a student absent manually ────────────────────────────────────────
+  // ── Mark Absent ───────────────────────────────────────────────────────────
   const markAbsent = async (student) => {
     setMarking(student.student_id);
     try {
       await attendanceAPI.correctAttendance(id, {
         student_id: student.student_id,
+        name:       student.name,
         status:     'absent',
         notes:      'Manually marked absent by teacher'
       });
       toast.success(`${student.name} marked absent`);
-      fetchAll();
-    } catch {
-      toast.error('Failed to update attendance');
+      await fetchAll();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to update attendance');
     } finally {
       setMarking(null);
     }
   };
 
-  // ── Export CSV ─────────────────────────────────────────────────────────────
+  // ── Export CSV ────────────────────────────────────────────────────────────
   const exportCSV = () => {
     if (!session) return;
-    const presentIds = new Set((session.students_present || []).map(s => s.student_id));
+    const presentIds     = new Set((session.students_present || []).map(s => s.student_id));
     const absentStudents = allStudents.filter(s => !presentIds.has(s.student_id));
 
     const rows = [
@@ -93,57 +98,65 @@ export default function SessionDetail() {
         s.student_id,
         s.name,
         'Present',
-        s.appearances || '',
-        s.avg_similarity ? (s.avg_similarity * 100).toFixed(1) + '%' : '',
-        s.marked_by === 'manual' ? 'Manual' : 'AI'
+        s.appearances || 0,
+        s.avg_similarity ? (s.avg_similarity * 100).toFixed(1) + '%' : 'Manual',
+        s.marked_by === 'manual' ? 'Teacher' : 'AI'
       ]),
       ...absentStudents.map(s => [
         s.student_id,
         s.name,
         'Absent',
-        '0',
+        0,
         '—',
         'System'
       ])
     ];
 
-    const csv  = rows.map(r => r.join(',')).join('\n');
+    const csv  = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
-    a.download = `attendance_${session.class_name}_${new Date(session.date).toLocaleDateString('en-IN').replace(/\//g, '-')}.csv`;
+    a.download = `Attendance_${session.class_name}_${new Date(session.date).toLocaleDateString('en-IN').replace(/\//g, '-')}.csv`;
     a.click();
     URL.revokeObjectURL(url);
     toast.success('CSV exported!');
   };
 
-  // ── Derived data ───────────────────────────────────────────────────────────
-  if (loading) return <div className="flex items-center justify-center h-96"><div className="spinner spinner-lg" /></div>;
-  if (!session) return (
-    <div className="text-center py-20">
-      <p className="text-slate-400 text-lg">Session not found</p>
-      <Link to="/reports" className="btn-ghost mt-4">Back to Reports</Link>
-    </div>
-  );
+  // ── Loading / Not Found ───────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="spinner spinner-lg" />
+      </div>
+    );
+  }
 
+  if (!session) {
+    return (
+      <div className="text-center py-20">
+        <p className="text-slate-400 text-lg mb-4">Session not found</p>
+        <Link to="/reports" className="btn-ghost">← Back to Reports</Link>
+      </div>
+    );
+  }
+
+  // ── Derived values ────────────────────────────────────────────────────────
   const presentIds     = new Set((session.students_present || []).map(s => s.student_id));
   const absentStudents = allStudents.filter(s => !presentIds.has(s.student_id));
-
-  // Filter absent by search
   const filteredAbsent = absentStudents.filter(s =>
     s.name.toLowerCase().includes(search.toLowerCase()) ||
     s.student_id.toLowerCase().includes(search.toLowerCase())
   );
 
-  const avgOccupancy  = session.statistics?.avg_classroom_occupancy || 0;
-  const recognized    = (session.students_present || []).length;
-  const unaccounted   = Math.max(0, Math.round(avgOccupancy) - recognized);
+  const avgOccupancy = session.statistics?.avg_classroom_occupancy || 0;
+  const recognized   = (session.students_present || []).length;
+  const unaccounted  = Math.max(0, Math.round(avgOccupancy) - recognized);
 
   return (
     <div className="space-y-8">
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {/* ── Header ──────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
           <Link to="/reports" className="text-slate-500 hover:text-slate-300 text-sm flex items-center gap-1 mb-3">
@@ -154,43 +167,50 @@ export default function SessionDetail() {
             {new Date(session.date).toLocaleDateString('en-IN', {
               weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
             })}
-            {session.instructor && ` · ${session.instructor}`}
+            {session.instructor && session.instructor !== 'Not specified' && ` · ${session.instructor}`}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           {session.status === 'completed' && (
             <button onClick={exportCSV} className="btn-ghost text-sm">
               ⬇ Export CSV
             </button>
           )}
-          <span className={STATUS[session.status] || 'badge-blue'}>
+          <span className={STATUS_BADGE[session.status] || 'badge-blue'}>
             {session.status?.toUpperCase()}
           </span>
         </div>
       </div>
 
-      {/* ── Processing Banner ──────────────────────────────────────────────── */}
+      {/* ── Processing Banner ────────────────────────────────────────────── */}
       {session.status === 'processing' && (
         <div className="card border-amber-800/50 bg-amber-900/10">
           <div className="flex items-center gap-4">
             <div className="spinner spinner-lg" />
             <div>
               <p className="font-semibold text-amber-300">AI is processing the video…</p>
-              <p className="text-amber-600 text-sm">Auto-refreshing every 4 seconds.</p>
+              <p className="text-amber-600 text-sm">Auto-refreshing every 4 seconds. Please wait.</p>
             </div>
           </div>
         </div>
       )}
 
+      {session.status === 'failed' && (
+        <div className="card border-red-800/50 bg-red-900/10">
+          <p className="font-semibold text-red-300">Processing Failed</p>
+          <p className="text-red-500 text-sm mt-1">The AI pipeline encountered an error. Please try processing the video again.</p>
+        </div>
+      )}
+
       {session.status === 'completed' && (
         <>
-          {/* ── Stats ──────────────────────────────────────────────────────── */}
+          {/* ── Stats ─────────────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[
-              { label: 'Frames Analyzed',  value: session.frames_analyzed || 0,    color: 'text-blue-400'   },
-              { label: 'Students Present', value: recognized,                       color: 'text-emerald-400' },
-              { label: 'Students Absent',  value: absentStudents.length,            color: 'text-red-400'    },
-              { label: 'Recognition Rate', value: session.statistics?.recognition_rate || '—', color: 'text-indigo-400' },
+              { label: 'Frames Analyzed',  value: session.frames_analyzed || 0,              color: 'text-blue-400'    },
+              { label: 'Students Present', value: recognized,                                color: 'text-emerald-400' },
+              { label: 'Students Absent',  value: absentStudents.length,                    color: 'text-red-400'     },
+              { label: 'Recognition Rate', value: session.statistics?.recognition_rate || '—', color: 'text-indigo-400'  },
             ].map((s, i) => (
               <div key={i} className="card text-center">
                 <p className={`text-3xl font-bold ${s.color}`}>{s.value}</p>
@@ -199,9 +219,9 @@ export default function SessionDetail() {
             ))}
           </div>
 
-          {/* ── YOLO Checksum ──────────────────────────────────────────────── */}
+          {/* ── YOLO Checksum ─────────────────────────────────────────────── */}
           <div className="card border-indigo-800/40 bg-indigo-900/10">
-            <h2 className="font-semibold text-indigo-300 mb-4">
+            <h2 className="font-semibold text-indigo-300 mb-4 text-sm uppercase tracking-wider">
               YOLO Headcount Checksum
             </h2>
             <div className="grid grid-cols-3 gap-4 text-center">
@@ -224,20 +244,21 @@ export default function SessionDetail() {
             </div>
             {unaccounted > 0 && (
               <div className="mt-3 p-3 bg-slate-800/40 rounded-xl flex items-start gap-2">
-                <span className="text-amber-500">!</span>
+                <span className="text-amber-500 text-sm flex-shrink-0">!</span>
                 <p className="text-slate-400 text-xs">
-                  {unaccounted} student(s) were physically present but not recognized by AI.
-                  They may be in the <strong className="text-slate-300">Absent</strong> list below —
-                  teacher can manually mark them present.
+                  <strong className="text-slate-300">{unaccounted}</strong> student(s) were
+                  physically detected in the room but not identified by AI. They may appear in
+                  the <strong className="text-slate-300">Absent</strong> list below — the teacher
+                  can search and manually mark them present.
                 </p>
               </div>
             )}
           </div>
 
-          {/* ── Two Column Layout ───────────────────────────────────────────── */}
+          {/* ── Two-column: Present + Absent ───────────────────────────────── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-            {/* ── PRESENT STUDENTS ─────────────────────────────────────────── */}
+            {/* PRESENT */}
             <div className="card">
               <h2 className="font-semibold text-slate-200 mb-5 flex items-center gap-2">
                 <span className="text-emerald-400">✓</span>
@@ -249,10 +270,13 @@ export default function SessionDetail() {
                   No students recognized yet
                 </p>
               ) : (
-                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                  {(session.students_present || []).map((s, i) => {
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                  {(session.students_present || []).map((s) => {
                     const conf      = s.avg_similarity ? (s.avg_similarity * 100).toFixed(1) : null;
-                    const confColor = conf >= 80 ? 'text-emerald-400' : conf >= 65 ? 'text-amber-400' : 'text-red-400';
+                    const confColor = !conf ? 'text-slate-500'
+                      : conf >= 80 ? 'text-emerald-400'
+                      : conf >= 65 ? 'text-amber-400'
+                      : 'text-red-400';
 
                     return (
                       <div key={s.student_id}
@@ -260,7 +284,7 @@ export default function SessionDetail() {
 
                         {/* Avatar */}
                         <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-600 to-teal-700 flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
-                          {s.name?.charAt(0).toUpperCase()}
+                          {s.name?.charAt(0)?.toUpperCase() || '?'}
                         </div>
 
                         {/* Info */}
@@ -271,21 +295,24 @@ export default function SessionDetail() {
 
                         {/* Confidence */}
                         {conf && (
-                          <span className={`text-xs font-bold mono ${confColor}`}>{conf}%</span>
+                          <span className={`text-xs font-bold mono flex-shrink-0 ${confColor}`}>
+                            {conf}%
+                          </span>
                         )}
 
-                        {/* Marked by badge */}
-                        <span className={s.marked_by === 'manual' ? 'badge-yellow' : 'badge-blue'}>
+                        {/* Badge */}
+                        <span className={`flex-shrink-0 ${s.marked_by === 'manual' ? 'badge-yellow' : 'badge-blue'}`}>
                           {s.marked_by === 'manual' ? 'Manual' : 'AI'}
                         </span>
 
-                        {/* Mark absent button */}
+                        {/* Mark absent on hover */}
                         <button
                           onClick={() => markAbsent(s)}
                           disabled={marking === s.student_id}
-                          className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all text-xs font-medium ml-1 flex-shrink-0"
+                          title="Mark Absent"
+                          className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all text-xs ml-1 flex-shrink-0"
                         >
-                          {marking === s.student_id ? '…' : '✕'}
+                          {marking === s.student_id ? <div className="spinner" /> : '✕'}
                         </button>
                       </div>
                     );
@@ -294,24 +321,24 @@ export default function SessionDetail() {
               )}
             </div>
 
-            {/* ── ABSENT STUDENTS — MANUAL OVERRIDE ────────────────────────── */}
-            <div className="card border-red-900/30">
-              <h2 className="font-semibold text-slate-200 mb-2 flex items-center gap-2">
+            {/* ABSENT — MANUAL OVERRIDE */}
+            <div className="card border-red-900/20">
+              <h2 className="font-semibold text-slate-200 mb-1 flex items-center gap-2">
                 <span className="text-red-400">✕</span>
                 Absent ({absentStudents.length})
               </h2>
               <p className="text-slate-500 text-xs mb-4">
-                If a student is physically present but listed here, search their name and click
-                <span className="text-emerald-400 font-medium"> Mark Present</span>.
+                Student physically present but listed here? Search their name and click
+                <span className="text-emerald-400 font-semibold"> Mark Present</span>.
               </p>
 
               {/* Search */}
-              <div className="relative mb-4">
+              <div className="relative mb-3">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">⌕</span>
                 <input
                   value={search}
                   onChange={e => setSearch(e.target.value)}
-                  placeholder="Search absent student by name or ID…"
+                  placeholder="Search by name or student ID…"
                   className="input pl-9 py-2 text-sm"
                 />
               </div>
@@ -319,20 +346,23 @@ export default function SessionDetail() {
               {filteredAbsent.length === 0 ? (
                 <div className="text-center py-8">
                   {search ? (
-                    <p className="text-slate-500 text-sm">No student found matching "{search}"</p>
-                  ) : (
-                    <p className="text-emerald-400 text-sm">All enrolled students are present!</p>
-                  )}
+                    <p className="text-slate-500 text-sm">No student found for "{search}"</p>
+                  ) : absentStudents.length === 0 ? (
+                    <div>
+                      <p className="text-emerald-400 text-xl mb-1">✓</p>
+                      <p className="text-emerald-600 text-sm">All enrolled students are present!</p>
+                    </div>
+                  ) : null}
                 </div>
               ) : (
-                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
                   {filteredAbsent.map(s => (
                     <div key={s.student_id}
-                      className="flex items-center gap-3 p-3 bg-slate-800/30 rounded-xl hover:bg-slate-800/60 transition-colors border border-slate-800 hover:border-slate-700">
+                      className="flex items-center gap-3 p-3 bg-slate-800/30 rounded-xl border border-slate-800 hover:border-slate-700 hover:bg-slate-800/50 transition-colors">
 
                       {/* Avatar */}
-                      <div className="w-9 h-9 rounded-full bg-gradient-to-br from-slate-600 to-slate-700 flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
-                        {s.name?.charAt(0).toUpperCase()}
+                      <div className="w-9 h-9 rounded-full bg-gradient-to-br from-slate-600 to-slate-700 flex items-center justify-center text-slate-300 text-sm font-bold flex-shrink-0">
+                        {s.name?.charAt(0)?.toUpperCase() || '?'}
                       </div>
 
                       {/* Info */}
@@ -341,7 +371,7 @@ export default function SessionDetail() {
                         <p className="text-slate-500 text-xs mono">{s.student_id}</p>
                       </div>
 
-                      {/* Mark Present Button */}
+                      {/* Mark Present */}
                       <button
                         onClick={() => markPresent(s)}
                         disabled={marking === s.student_id}
@@ -357,10 +387,9 @@ export default function SessionDetail() {
                 </div>
               )}
             </div>
-
           </div>
 
-          {/* ── Processing Info ─────────────────────────────────────────────── */}
+          {/* ── Footer ────────────────────────────────────────────────────── */}
           {session.processing_time && (
             <div className="flex items-center justify-between text-xs text-slate-700 px-1">
               <span>Processed in {session.processing_time.toFixed(1)}s</span>
