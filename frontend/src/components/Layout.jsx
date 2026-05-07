@@ -8,7 +8,7 @@ const NAV = [
   { path: '/students', icon: '◉', label: 'Students' },
 ];
 
-export default function Layout({ children }) {
+export default function Layout({ children, onLogout }) {
   const { pathname } = useLocation();
   return (
     <div className="flex h-screen overflow-hidden">
@@ -44,9 +44,15 @@ export default function Layout({ children }) {
         </nav>
 
         {/* Footer */}
-        <div className="p-4 border-t border-slate-800">
+        <div className="p-4 border-t border-slate-800 space-y-3">
           <p className="text-xs text-slate-600 text-center">Aditya • Aditya • Kalash</p>
           <p className="text-xs text-slate-700 text-center">B.Tech IT 2025-26</p>
+          <button
+            onClick={onLogout}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-slate-500 hover:text-red-400 hover:bg-red-900/20 border border-transparent hover:border-red-900/40 transition-all duration-150"
+          >
+            <span>⏻</span> Sign Out
+          </button>
         </div>
       </aside>
 
